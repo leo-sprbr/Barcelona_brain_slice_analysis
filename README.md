@@ -1,28 +1,5 @@
 # Brain Slice Magnetoelectric Stimulation Analysis Pipeline
 
-A modular Python pipeline for analysing LFP recordings from brain slice experiments,
-focusing on Up/Down state dynamics under magnetoelectric (ME) stimulation.
-
----
-
-## Scientific Background
-
-This pipeline implements the analysis described in:
-> Guillamon-Vivancos et al. (2022), *eLife* — https://pubmed.ncbi.nlm.nih.gov/33011419/
-
-The core idea is that slow oscillations (SO, ~0.1–1 Hz) in cortical brain slices
-alternate between two network states:
-- **Up states**: periods of sustained, high-frequency network activity
-- **Down states**: periods of near-silence
-
-These states are detected by combining three LFP-derived signals into a single
-1D score via PCA, then thresholding its bimodal distribution.
-
-**This pipeline's focus:** How does magnetoelectric stimulation change Up/Down
-state properties (duration, frequency, firing rate) relative to baseline, within
-the same slice?
-
----
 
 ## Project Structure
 
@@ -36,6 +13,7 @@ my_brain_slice_analysis/
 ├── data/
 │   ├── raw/                ← .smr files go here (gitignored)
 │   └── processed/          ← .h5 files go here (gitignored)
+│   └── condition/          ← sliced trial conditions here (gitignored)
 │
 ├── src/                    ← Core library (importable modules)
 │   ├── __init__.py
@@ -53,6 +31,7 @@ my_brain_slice_analysis/
 │       └── metrics.py      ← Duration stats, SO frequency, delta metrics, stats tests
 │
 ├── notebooks/              ← Jupyter notebooks for exploration & figures
+│   ├── 00_trial_definition.ipynb
 │   ├── 01_exploratory.ipynb
 │   ├── 02_up_down_analysis.ipynb
 │   └── 03_figure_making.ipynb
@@ -61,11 +40,7 @@ my_brain_slice_analysis/
 │   ├── convert_smr_to_h5.py    ← Converts raw .smr → .h5
 │   ├── run_full_analysis.py    ← Runs the full pipeline on one slice
 │   └── batch_process_slices.py ← Loops over all slices in processed/
-│
-└── tests/                  ← Unit tests (pytest)
-    ├── test_preprocessing.py
-    ├── test_up_down.py
-    └── test_metrics.py
+
 ```
 
 ---
@@ -137,40 +112,6 @@ See `config.yaml` for full documentation of each parameter.
 
 ---
 
-## How the Analysis Works (step by step)
-
-```
-Raw LFP (samples × channels)
-        │
-        ▼
-[preprocessing.py]
-  ├── SO signal      : bandpass 0.1–1.5 Hz, take slow deflection
-  ├── Gamma envelope : bandpass 30–80 Hz, compute variance in sliding window
-  └── logMUA         : bandpass 200–1500 Hz, power in 5ms windows, log-scaled
-        │
-        ▼ z-score each signal, stack into (samples × 3) matrix
-        │
-[up_down.py]
-  └── PCA → PC1 (bimodal) → KDE threshold → Up/Down state epochs
-        │
-        ▼
-[firing_rates.py]
-  ├── Mean logMUA per Up/Down epoch
-  └── Transition-aligned firing rate traces (Gaussian smoothed)
-        │
-        ▼
-[metrics.py]
-  ├── Up/Down durations, SO frequency
-  ├── Outlier exclusion (95% / 99.9% CI per condition)
-  ├── Delta duration  (stimulation − baseline)
-  ├── Delta firing rate (relative change vs baseline)
-  └── Statistical tests:
-       ├── Mann-Whitney U (independent, e.g. baseline vs sham/control)
-       └── Paired Wilcoxon  (within-slice: baseline vs stim / post-stim)
-```
-
----
-
 ## Adapting the Pipeline
 
 The pipeline is intentionally modular. Here are common customisation scenarios:
@@ -209,10 +150,3 @@ See `requirements.txt` for the full pinned list. Key packages:
 - `matplotlib`, `seaborn` — plotting
 - `pyyaml` — configuration loading
 - `tqdm` — progress bars
-
----
-
-## Citation
-
-If you use this pipeline, please cite the detection method:
-> Tort-Colet et al. (2021). *Attractor competition enriches cortical dynamics during awakening from anesthesia.* Cell Systems. https://pubmed.ncbi.nlm.nih.gov/33011419/
