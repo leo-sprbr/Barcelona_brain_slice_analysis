@@ -1,0 +1,28 @@
+# ============================================================
+# Brain Slice Analysis Pipeline — Python Dependencies
+# Install with: pip install -r requirements.txt
+# ============================================================
+
+# --- Data I/O ---
+neo>=0.12.0            # Reading Spike2 .smr files
+h5py>=3.8.0            # Reading/writing HDF5 (.h5) files
+
+# --- Numerical computing ---
+numpy>=1.24.0
+scipy>=1.10.0          # Filtering, PCA, Wilcoxon, Mann-Whitney
+scikit-learn>=1.2.0    # PCA (sklearn API, easier to use than scipy)
+pandas>=2.0.0          # DataFrames for results tables
+
+# --- Plotting ---
+matplotlib>=3.7.0
+seaborn>=0.12.0        # Statistical plots (boxplots, violin plots)
+
+# --- Configuration ---
+pyyaml>=6.0
+
+# --- Utilities ---
+tqdm>=4.65.0           # Progress bars for batch processing
+
+# --- Notebooks (optional but recommended) ---
+jupyter>=1.0.0
+ipykernel>=6.0.0
