@@ -298,6 +298,53 @@ def get_condition_color(condition: str, conditions_list: list, colormap: str = "
     return cmap(idx / max(len(conditions_list) - 1, 1))
 
 
+from scipy import signal
+
+def spectrogram(lfp_signal, fs):
+    # Compute spectrogram (1-10 Hz) on the original LFP
+    freqs, times, Sxx = signal.spectrogram(
+        lfp_signal,
+        fs=fs,
+        nperseg=int(fs * 4),  # 4-second windows
+        noverlap=int(fs * 3),  # 3-second overlap
+    )
+    # Filter to 1-10 Hz
+    freq_mask = (freqs >= 1) & (freqs <= 10)
+    freqs = freqs[freq_mask]
+    Sxx = Sxx[freq_mask, :]
+
+    # Convert to dB
+    Sxx_db = 10 * np.log10(Sxx + 1e-10)
+
+    return freqs, times, Sxx_db
+
+import re
+
+def parse_trial_id(slice_id: str, conditions: list) -> str:
+    """
+    Remove the trailing condition label from a slice_id to obtain a
+    trial-level grouping key.
+
+    Example
+    -------
+    slice_id  = '20260414_SLICE3_CONTROL_Nathalia_vitaly_trial_01_baseline'
+    conditions = ['baseline', 'stimulation', 'post_stimulation']
+    → returns  '20260414_SLICE3_CONTROL_Nathalia_vitaly_trial_01'
+
+    Works by removing the longest matching condition suffix
+    (with an optional leading underscore or hyphen).
+    If no condition suffix is found the original slice_id is returned,
+    which is fine — it just won't pair with anything.
+    """
+    # Sort longest-first so 'post_stimulation' is tried before 'stimulation'
+    for cond in sorted(conditions, key=len, reverse=True):
+        # Match the condition at the end, preceded by a separator
+        pattern = r'[_\-]' + re.escape(cond) + r'$'
+        stripped = re.sub(pattern, '', slice_id, flags=re.IGNORECASE)
+        if stripped != slice_id:
+            return stripped
+    return slice_id   # no condition suffix found — return as-is
+
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------

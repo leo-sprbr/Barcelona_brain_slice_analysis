@@ -73,7 +73,7 @@ def batch_run(cfg: dict, save_figures: bool = False) -> pd.DataFrame:
     pd.DataFrame
         Full results table (all slices × all conditions).
     """
-    processed_dir = cfg["paths"]["processed_dir"]
+    processed_dir = cfg["paths"]["condition_dir"]
     results_dir   = cfg["paths"]["results_dir"]
     os.makedirs(results_dir, exist_ok=True)
 
