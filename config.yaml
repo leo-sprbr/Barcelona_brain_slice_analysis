@@ -53,6 +53,9 @@ preprocessing:
   # e.g. [0, 1, 2]. 
   channel: [1]            # null → average all 32 channels
 
+  high_channels: []
+  low_channels: []
+
   # Slow Oscillation (SO) signal
   # Bandpass filter range (Hz). The resulting signal captures the
   # slow negative deflection associated with Down states.

@@ -345,6 +345,81 @@ def parse_trial_id(slice_id: str, conditions: list) -> str:
             return stripped
     return slice_id   # no condition suffix found — return as-is
 
+
+def get_stimulation_files(
+    h5_paths: list[str],
+    conditions: list[str],
+    stim_condition: str = "stimulation",
+) -> list[str]:
+    """
+    Filter a list of .h5 paths to keep only those whose filename contains
+    the stimulation condition label (identified via parse_trial_id logic).
+ 
+    Parameters
+    ----------
+    h5_paths : list of str
+    conditions : list of str
+        All condition labels from config.yaml.
+    stim_condition : str
+        The condition label that marks stimulation files.
+ 
+    Returns
+    -------
+    list of str
+        Filtered list of paths.
+    """
+    import os
+    result = []
+    for path in h5_paths:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        # The condition label should appear as a suffix in the stem
+        trial_id = parse_trial_id(stem, conditions)
+        if trial_id != stem:
+            # A condition suffix was found — check which one
+            suffix = stem[len(trial_id):].lstrip('_-').lower()
+            if suffix == stim_condition.lower():
+                result.append(path)
+    return result
+
+
+def shared_ylims(*value_lists, padding: float = 0.1) -> tuple[float, float]:
+    """
+    Compute a shared y-axis range across multiple lists of values,
+    with a relative padding on each side.
+
+    Use this to synchronise y-axes between two side-by-side plots so
+    that the same metric is visually comparable across groups.
+
+    Parameters
+    ----------
+    *value_lists : list of float
+        Any number of value lists (NaNs are ignored).
+    padding : float
+        Fractional padding added to each side of the range.
+        Default 0.1 = 10% on each side.
+
+    Returns
+    -------
+    (ymin, ymax) : tuple of float
+
+    Example
+    -------
+        ymin, ymax = shared_ylims(delta_high, delta_low)
+        for ax in axes:
+            ax.set_ylim(ymin, ymax)
+    """
+    all_vals = np.array([
+        v for lst in value_lists
+        for v in lst
+        if v is not None and not np.isnan(v)
+    ])
+
+    if len(all_vals) == 0:
+        return (-1.0, 1.0)
+
+    lo, hi = float(all_vals.min()), float(all_vals.max())
+    span   = hi - lo if hi != lo else 1.0
+    return (lo - padding * span, hi + padding * span)
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------

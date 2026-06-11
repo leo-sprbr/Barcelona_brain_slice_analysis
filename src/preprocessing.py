@@ -325,6 +325,38 @@ def _compute_log_mua(
 
     return log_mua
 
+def _compute_raw_mua(
+    lfp: np.ndarray,
+    fs: float,
+    mua_band: list,
+    smooth_ms: float,
+) -> np.ndarray:
+    """
+    Compute raw MUA (envelope of high-frequency power).
+    
+    This is the standard non-logged version used as a biological marker
+    of local population spiking activity.
+    """
+    if len(lfp) < fs * 1:  # at least 1 second
+        raise ValueError("Signal too short")
+
+    # 1. Bandpass filter in MUA range (4th order Butterworth, zero-phase)
+    nyq = fs / 2
+    low = mua_band[0] / nyq
+    high = min(mua_band[1] / nyq, 0.99)  # avoid Nyquist issues
+    
+    b, a = butter(N=4, Wn=[low, high], btype='bandpass')
+    filtered = filtfilt(b, a, lfp.astype(np.float64))  # zero-phase
+
+    # 2. Instantaneous power (rectified power)
+    power = filtered ** 2
+
+    # 3. Smooth (this is the core of raw MUA envelope)
+    smooth_samples = max(5, int(round(smooth_ms * 1e-3 * fs)))
+    raw_mua = uniform_filter1d(power, size=smooth_samples, mode='nearest')
+
+    return raw_mua
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

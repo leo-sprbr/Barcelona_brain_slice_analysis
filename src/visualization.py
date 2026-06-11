@@ -1287,6 +1287,166 @@ def plot_delta_duration_joint(
 
     return fig
 
+
+# ---------------------------------------------------------------------------
+# 11. Per-channel logMUA stats heatmap + threshold
+# ---------------------------------------------------------------------------
+
+def plot_channel_stats(
+    stats_df,
+    threshold: float,
+    high_channels: list,
+    low_channels: list,
+    cfg: dict,
+    metric: str = "mean_logmua",
+) -> tuple[plt.Figure, np.ndarray]:
+    """
+    Two-panel figure showing per-channel logMUA statistics and the
+    KDE distribution used to find the high/low threshold.
+
+    Panel A (left): bar chart of `metric` per channel (1-based labels),
+                    bars coloured by group (high = red, low = blue).
+    Panel B (right): KDE of `metric` values across channels with the
+                     threshold marked.
+
+    Parameters
+    ----------
+    stats_df : pd.DataFrame
+        Output of channel_analysis.compute_channel_stats().
+        Must have columns: channel_1based, mean_logmua, var_logmua.
+    threshold : float
+        The KDE valley threshold separating high from low channels.
+    high_channels : list of int
+        0-based indices of high channels.
+    low_channels : list of int
+        0-based indices of low channels.
+    cfg : dict
+    metric : str
+        "mean_logmua" or "var_logmua".
+    """
+    from scipy.stats import gaussian_kde as _gkde
+
+    _apply_style(cfg)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5),
+                             gridspec_kw={"width_ratios": [3, 1.2]})
+    ax_bar, ax_kde = axes
+
+    values      = stats_df[metric].values
+    ch_1based   = stats_df["channel_1based"].values    # display labels
+    ch_0based   = stats_df["channel_0based"].values
+
+    # Colours per bar
+    bar_colors = [
+        "#d62728" if c in high_channels else "#1f77b4"   # red / blue
+        for c in ch_0based
+    ]
+
+    # --- Panel A: bar chart ---
+    x_pos = np.arange(len(ch_1based))
+    ax_bar.bar(x_pos, values, color=bar_colors, edgecolor="white",
+               linewidth=0.4, width=0.8)
+    ax_bar.axhline(threshold, color="black", lw=1.5, ls="--",
+                   label=f"Threshold = {threshold:.3f}")
+
+    ax_bar.set_xticks(x_pos)
+    ax_bar.set_xticklabels(ch_1based, fontsize=7, rotation=90)
+    ax_bar.set_xlabel("Channel (1-based)")
+    metric_label = "Mean logMUA" if metric == "mean_logmua" else "logMUA variance"
+    ax_bar.set_ylabel(metric_label)
+    ax_bar.set_title(f"Per-channel {metric_label}\n"
+                     f"High (red): n={len(high_channels)}  "
+                     f"Low (blue): n={len(low_channels)}")
+    ax_bar.legend(fontsize=9)
+
+    # --- Panel B: KDE with threshold ---
+    kde   = _gkde(values, bw_method="scott")
+    x_ev  = np.linspace(values.min() - abs(values.std()), 
+                        values.max() + abs(values.std()), 400)
+    dens  = kde(x_ev)
+
+    ax_kde.fill_betweenx(x_ev, dens, alpha=0.25, color="gray")
+    ax_kde.plot(dens, x_ev, color="black", lw=1.5)
+    ax_kde.axhline(threshold, color="black", lw=1.5, ls="--",
+                   label=f"Threshold\n{threshold:.3f}")
+
+    # Shade high / low regions
+    ax_kde.fill_between(
+        [0, dens.max() * 1.1],
+        threshold, x_ev.max(),
+        alpha=0.12, color="#d62728", label="High"
+    )
+    ax_kde.fill_between(
+        [0, dens.max() * 1.1],
+        x_ev.min(), threshold,
+        alpha=0.12, color="#1f77b4", label="Low"
+    )
+
+    ax_kde.set_xlabel("Density")
+    ax_kde.set_ylabel(metric_label)
+    ax_kde.set_title("Channel distribution")
+    ax_kde.legend(fontsize=8)
+    ax_kde.set_xlim(left=0)
+
+    fig.suptitle("Channel classification — stimulation files", fontsize=12)
+    plt.tight_layout()
+    return fig, axes
+
+
+def plot_group_comparison(
+    summary_high: pd.DataFrame,
+    summary_low: pd.DataFrame,
+    cfg: dict,
+) -> tuple[plt.Figure, np.ndarray]:
+    """
+    Six-panel comparison figure between high and low channel groups,
+    reusing the existing per-condition plotting functions.
+
+    Panels (one column per channel group, rows = metrics):
+        Row 1 : Up duration boxplot
+        Row 2 : Down duration boxplot
+        Row 3 : SO frequency bar
+        Row 4 : Up FR delta (stim vs baseline)
+        Row 5 : Down FR delta (stim vs baseline)
+        Row 6 : Up FR delta (post vs baseline)    [if post_stimulation present]
+
+    Actually rendered as a flexible grid: 3 metric rows × 2 group columns.
+
+    Parameters
+    ----------
+    summary_high : pd.DataFrame
+        summary_df for the high-channel group (all conditions, all trials).
+    summary_low : pd.DataFrame
+        summary_df for the low-channel group.
+    cfg : dict
+
+    Returns
+    -------
+    fig, axes  shape (3, 2)
+    """
+    _apply_style(cfg)
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 12))
+    group_labels = ["High channels", "Low channels"]
+    summaries    = [summary_high, summary_low]
+
+    for col, (label, sdf) in enumerate(zip(group_labels, summaries)):
+        # Row 0: Up duration
+        plot_duration_boxplot(sdf, "up",   cfg, ax=axes[0, col])
+        axes[0, col].set_title(f"{label}\nUp duration")
+
+        # Row 1: Down duration
+        plot_duration_boxplot(sdf, "down", cfg, ax=axes[1, col])
+        axes[1, col].set_title(f"{label}\nDown duration")
+
+        # Row 2: SO frequency
+        plot_so_frequency(sdf, cfg, ax=axes[2, col])
+        axes[2, col].set_title(f"{label}\nSO frequency")
+
+    fig.suptitle("High vs Low channel groups — Up/Down metrics", fontsize=13)
+    plt.tight_layout()
+    return fig, axes
+
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------
