@@ -31,6 +31,7 @@ Usage
 
 import os
 import glob
+from posixpath import join
 import numpy as np
 import h5py
 import pandas as pd
@@ -82,6 +83,73 @@ def load_h5(h5_path: str) -> tuple[np.ndarray, dict]:
 
     return data, meta
 
+
+def load_h5_time_window(h5_path: str, cfg: dict) -> tuple[np.ndarray, dict]:
+    """
+    Load a converted .h5 file and return the raw data array and metadata.
+
+    Parameters
+    ----------
+    h5_path : str
+        Path to the .h5 file.
+    cfg : dict
+        Configuration dictionary containing the time range to load.
+    Returns
+    -------
+    data : np.ndarray, shape (n_samples, n_channels)
+        Raw LFP data. Rows = time, columns = channels.
+    meta : dict
+        Metadata dict with keys:
+            fs               (float) — sampling rate in Hz
+            units            (str)   — physical unit string
+            duration_seconds (float) — recording duration
+            original_file    (str)   — original .smr filename
+            n_channels       (int)   — number of channels
+            n_samples        (int)   — number of samples
+    """
+    if not os.path.isfile(h5_path):
+        raise FileNotFoundError(f"H5 file not found: {h5_path}")
+    
+    t_start = cfg['visualization']['t_start']
+    t_end = cfg['visualization']['t_end']
+
+    with h5py.File(h5_path, "r") as f:
+        # --- Metadata ---
+        meta_grp = f["metadata"]
+        meta = {
+            "fs":               float(meta_grp.attrs["fs"]),
+            "units":            str(meta_grp.attrs["units"]),
+            "duration_seconds": float(meta_grp.attrs["duration_seconds"]),
+            "original_file":    str(meta_grp.attrs["original_file"]),
+        }
+
+        # --- Calculate Indices ---
+        fs = meta["fs"]
+        start_idx = int(t_start * fs)
+        end_idx = int(t_end * fs)
+
+        # --- Raw data ---
+        data = f["raw_data"][start_idx:end_idx]   # shape: (n_samples, n_channels)
+
+    meta["n_samples"], meta["n_channels"] = data.shape
+
+    return data, meta
+
+def list_h5_file_single(cfg: dict) -> str:
+    print("Checking for .h5 file in processed_dir...")
+    
+    processed_dir = cfg['paths']['processed_dir']
+    # --- FIXED: Use os.path.basename to strip away the accidental folder path ---
+    data_file_name = os.path.basename(cfg['paths']['data_file']) 
+    
+    # Now os.path.join will perfectly merge them!
+    h5_file_name = os.path.join(processed_dir, data_file_name)
+    
+    print(f"Looking for file: {h5_file_name}")
+    if os.path.isfile(h5_file_name):
+        return h5_file_name
+    else:
+        return None
 
 def list_h5_files(directory: str) -> list[str]:
     """

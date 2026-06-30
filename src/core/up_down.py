@@ -118,6 +118,7 @@ def _run_pca(features: np.ndarray) -> np.ndarray:
     # The gamma and logMUA columns (indices 1, 2) should have positive loadings.
     # If the mean loading on those columns is negative, flip the sign.
     loadings = pca.components_[0]           # shape (n_features,)
+    print(loadings)
     activity_loadings = loadings[1:].mean() # gamma + logMUA loadings
     if activity_loadings < 0:
         pc1 = -pc1

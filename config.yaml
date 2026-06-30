@@ -16,7 +16,7 @@
 # ------------------------------------------------------------
 paths:
   raw_data_dir:     "Z:/datasets/BCN_Slices/20260414"         # Where .smr files are stored
-  processed_dir:    "data/processed"   # Where .h5 files are written
+  processed_dir:    "C:/ETH/EVA/Brain slice stimulation/20260414_brain slices exp in BCN/Nathalia/h5_raw"   # Where .h5 files are written
   condition_dir:    "data/condition"
   results_dir:      "results"          # Where CSVs and figures are saved
   figures_dir:      "results/figures"  # Subfolder for plots

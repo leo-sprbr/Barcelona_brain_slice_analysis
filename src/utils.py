@@ -301,22 +301,35 @@ def get_condition_color(condition: str, conditions_list: list, colormap: str = "
 from scipy import signal
 
 def spectrogram(lfp_signal, fs):
-    # Compute spectrogram (1-10 Hz) on the original LFP
+    # 1. Use a shorter segment window for sharper time precision (e.g., 1 second)
+    nperseg = int(fs * 1.0) 
+    shape = lfp_signal.shape
+    print(f"Spectrogram input signal shape: {shape}, fs: {fs}, nperseg: {nperseg}")
+    # 2. Drastically increase overlap (90%) for smooth, continuous time transitions
+    noverlap = int(nperseg * 0.90)
+    
+    nfft = int(nperseg * 4)
+    # Compute spectrogram (1-30 Hz) on the original LFP
     freqs, times, Sxx = signal.spectrogram(
         lfp_signal,
         fs=fs,
-        nperseg=int(fs * 4),  # 4-second windows
-        noverlap=int(fs * 3),  # 3-second overlap
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
     )
-    # Filter to 1-10 Hz
-    freq_mask = (freqs >= 1) & (freqs <= 10)
+    # Filter to 1-20 Hz
+    freq_mask = (freqs >= 1) & (freqs <= 20)
     freqs = freqs[freq_mask]
     Sxx = Sxx[freq_mask, :]
 
     # Convert to dB
-    Sxx_db = 10 * np.log10(Sxx + 1e-10)
-
-    return freqs, times, Sxx_db
+    Sxx_log = np.log10(Sxx + 1e-10)
+    # FIX: Explicitly clip the returned 'times' array to never exceed 
+    # the true length of the input data signal
+    true_duration = len(lfp_signal) / fs
+    valid_mask = times <= true_duration
+    
+    return freqs, times[valid_mask], Sxx_log[:, valid_mask]
 
 import re
 

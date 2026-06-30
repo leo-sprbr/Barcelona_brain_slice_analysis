@@ -31,6 +31,7 @@ Usage
 """
 
 import os
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -78,15 +79,24 @@ def save_figure(fig: plt.Figure, filename: str, cfg: dict) -> str:
     str
         Full path where the figure was saved.
     """
-    fig_dir = cfg["paths"]["figures_dir"]
+    processed_dir = os.path.dirname(cfg["paths"]["processed_dir"])
+    fig_dir = os.path.join(processed_dir, "results", "figures")
+    t_start = cfg['visualization']['t_start']
+    t_end = cfg['visualization']['t_end']
+
+    # 2. Build the name of the dynamic subfolder (e.g., "3280-3340")
+    time_folder = f"{t_start}-{t_end}"
+    fig_dir = os.path.join(fig_dir, time_folder)
+
+    filename = f"{filename}_t{t_start}-{t_end}"
     os.makedirs(fig_dir, exist_ok=True)
 
-    fmt  = cfg.get("figures", {}).get("format", "pdf")
-    dpi  = cfg.get("figures", {}).get("dpi", 150)
+    fmt  = cfg.get("figures", {}).get("format", "png")
+    dpi  = cfg.get("figures", {}).get("dpi", 300)
     path = os.path.join(fig_dir, f"{filename}.{fmt}")
 
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    print(f"[viz] Saved figure → {path}")
+    print(f"Saved figure → {path}")
     return path
 
 
@@ -137,6 +147,111 @@ def plot_raw_lfp(
 
     return fig, ax
 
+def plot_raw_lfp_time_window(
+    lfp: np.ndarray,
+    fs: float,
+    cfg: dict,
+    t_range_s: tuple = None,
+    ax: plt.Axes = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Plot the raw LFP signal.
+
+    Parameters
+    ----------
+    lfp : np.ndarray, shape (n_samples, n_channels)
+    fs : float
+        Original sampling rate (Hz).
+    cfg : dict
+    t_range_s : (start_s, end_s) or None
+        Zoom into a time window. None = plot the full recording.
+    ax : plt.Axes, optional
+
+    Returns
+    -------
+    fig, ax
+    """
+    _apply_style(cfg)
+
+    n_samples = lfp.shape[0]
+    t = np.arange(n_samples) / fs
+
+    if t_range_s is not None:
+        mask = (t >= t_range_s[0]) & (t <= t_range_s[1])
+        t = t[mask]
+        lfp = lfp[mask]
+    
+    # 3. Determine if we are plotting single or multiple channels
+    is_multichannel = lfp.ndim > 1 and lfp.shape[1] > 1
+    n_channels = lfp.shape[1] if is_multichannel else 1
+
+    # 4. Create the Figure and Subplots
+    if is_multichannel:
+        # Create a vertically stacked layout sharing the same exact X-axis
+        # Adjust height dynamically based on the number of tracks (2 inches per channel)
+        fig, axes = plt.subplots(
+            nrows=n_channels, 
+            ncols=1, 
+            figsize=(14, 2 * n_channels), 
+            sharex=True
+        )
+        # Ensure 'axes' is always iterable even if a 1-row slice somehow occurs
+        if n_channels == 1:
+            axes = [axes]
+    else:
+        # Fallback for single channel (uses provided ax, or generates a clean single plot)
+        if ax is None:
+            fig, ax_single = plt.subplots(figsize=(14, 3))
+        else:
+            fig = ax.get_figure()
+            ax_single = ax
+        axes = [ax_single]
+
+    t_start = cfg['visualization']['t_start']
+    t_end = cfg['visualization']['t_end']
+
+    # 5. Plot the data onto the axes
+    if is_multichannel:
+        # Map out which channels were selected in the config to label them correctly
+        channel_list = cfg.get("preprocessing", {}).get("channel", list(range(n_channels)))
+        if channel_list is None:  # In case it was null/None in yaml
+            channel_list = list(range(n_channels))
+
+        for i in range(n_channels):
+            axes[i].plot(t, lfp[:, i], color="steelblue", lw=0.5, alpha=0.9)
+            axes[i].set_ylabel(f"Ch {channel_list[i]+1}\n(a.u.)")
+            axes[i].grid(True, alpha=0.2)
+            
+        axes[0].set_title(f"Raw Multichannel LFP Rows")
+        axes[-1].set_xlabel("Time (s)")
+        
+    else:
+        # Standard Single-Channel workflow
+        axes[0].plot(t, lfp, color="steelblue", lw=0.5, alpha=0.9)
+        axes[0].set_xlabel("Time (s)")
+        axes[0].set_ylabel("LFP (a.u.)")
+        
+        channel = cfg.get("preprocessing", {}).get("channel", "unknown")
+        axes[0].set_title(f"Raw LFP (Channel {channel})")
+    
+    # 6. Rewrite the X-axis tick labels manually
+    # Find the current tick positions (which are between 0 and 60)
+    current_ticks = axes[-1].get_xticks()
+    
+    # Calculate what the real time text should say for each position
+    new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
+    
+    # Apply the new text labels to the bottom axis
+    axes[-1].set_xticks(current_ticks)
+    axes[-1].set_xticklabels(new_labels)
+
+    plt.tight_layout()
+
+    # Save figure
+    save_figure(fig, "raw_lfp_all", cfg)
+    print("The plot has been saved to:", os.path.join(cfg["paths"]["figures_dir"], "raw_lfp_all.png"))
+
+    return fig, axes
 
 # ---------------------------------------------------------------------------
 # 2. Feature signals (SO, gamma, logMUA)
@@ -185,7 +300,60 @@ def plot_features(
 
     return fig, axes
 
+def plot_multichannel_feature_group(
+    feature_matrix: np.ndarray, 
+    t_ds: np.ndarray, 
+    feature_name: str, 
+    cfg: dict
+) -> plt.Figure:
+    """
+    Plots all channels for a single feature type in stacked subplots.
+    
+    Parameters
+    ----------
+    feature_matrix : shape (n_downsampled, n_channels)
+    feature_name : str ("SO", "Gamma Envelope", or "logMUA")
+    cfg : dict
+    """
+    n_channels = feature_matrix.shape[1]
+    t_start = cfg['visualization']['t_start']
+    
+    # Create vertically stacked subplots sharing the same X-axis
+    fig, axes = plt.subplots(
+        nrows=n_channels, 
+        ncols=1, 
+        figsize=(14, 2 * n_channels), 
+        sharex=True
+    )
+    
+    if n_channels == 1:
+        axes = [axes]
+        
+    # Plot each channel
+    for i in range(n_channels):
+        axes[i].plot(t_ds, feature_matrix[:, i], color="crimson" if "logMUA" in feature_name else "steelblue", lw=0.6)
+        axes[i].set_ylabel(f"Ch {i + 1}\n(z)", fontsize=8)
+        axes[i].axhline(0, color="gray", lw=0.5, ls="--")
+        axes[i].grid(True, alpha=0.15)
+        
+    axes[0].set_title(f"All Channels — {feature_name}", fontsize=14, fontweight='bold')
+    axes[-1].set_xlabel("Time (s)")
+    
+    # --- Custom Tick Text Labels Override ---
+    current_ticks = axes[-1].get_xticks()
+    new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
+    axes[-1].set_xticks(current_ticks)
+    axes[-1].set_xticklabels(new_labels)
+    
+    plt.tight_layout()
+    
+    # Save to your defined figures directory
+    save_filename = f"multichannel_{feature_name.lower().replace(' ', '_')}.png"
+    save_figure(fig, save_filename, cfg)
+    print("The plot has been saved to:", os.path.join(cfg["paths"]["figures_dir"], save_filename))
 
+
+    return fig
 # ---------------------------------------------------------------------------
 # 3. PC1 distribution (bimodal check)
 # ---------------------------------------------------------------------------
@@ -304,6 +472,110 @@ def plot_states_overlay(
 
     return fig, ax
 
+def plot_multichannel_states_overlay(
+    states_data: dict,
+    t_ds: np.ndarray,
+    cfg: dict,
+) -> tuple[plt.Figure, np.ndarray]:
+    """
+    Plot PC1 over time with Up/Down states indicated by background shading.
+
+    Parameters
+    ----------
+    t_ds : np.ndarray
+    pc1 : np.ndarray
+    states : np.ndarray — binary (1=Up, 0=Down)
+    threshold : float
+    cfg : dict
+    t_range_s : (start_s, end_s) or None
+    ax : plt.Axes, optional
+
+    Returns
+    -------
+    fig, ax
+    """
+    _apply_style(cfg)
+
+    # 1. Extract matrices from your unified states dictionary
+    pc1_matrix = states_data["pc1"]          # shape: (n_samples, n_channels)
+    states_matrix = states_data["states"]    # shape: (n_samples, n_channels)
+    thresholds = states_data["thresholds"]    # shape: (n_channels,)
+    
+    n_samples, n_channels = pc1_matrix.shape
+    t_start = cfg['visualization']['t_start']
+
+    # 2. Create a vertically stacked subplot layout sharing a synchronized X-axis
+    fig, axes = plt.subplots(
+        nrows=n_channels, 
+        ncols=1, 
+        figsize=(14, 2 * n_channels), 
+        sharex=True
+    )
+
+    # Ensure 'axes' is always iterable even if a single-channel fallback occurs
+    if n_channels == 1:
+        axes = [axes]
+
+    channel_list = cfg["preprocessing"].get("channel", None)
+    if channel_list is None or channel_list == []:
+        channel_list = list(range(1, n_channels + 1))
+
+    # 3. Loop through channels to generate each individual subplot panel
+    for i in range(n_channels):
+        ax = axes[i]
+        
+        # Grab tracking rows for the current channel
+        ch_pc1 = pc1_matrix[:, i]
+        ch_states = states_matrix[:, i]
+        ch_thresh = thresholds[i]
+
+        # Plot PC1 and its unique detection threshold line
+        ax.plot(t_ds, ch_pc1, color="gray", lw=0.7, alpha=0.8)
+
+        # --- FIXED SAFETY LOOP CHECK ---
+        if not np.isnan(ch_thresh):
+            ax.axhline(ch_thresh, color="crimson", lw=1, ls="--")
+            _shade_states(ax, t_ds, ch_states, up_color="#FF9999", down_color="#A8DADC")
+            # Shade Up-state and Down-state regions using your helper background tool
+            _shade_states(ax, t_ds, ch_states, up_color="#FF9999", down_color="#A8DADC")
+
+        else:
+           # 1. Give the broken channel a soft neutral background so it stands out as skipped
+            ax.set_facecolor("#F9F9F9")
+            
+            # 2. Put the warning text neatly in the top-right corner out of the data's way
+            ax.text(0.98, 0.90, "No Threshold: Non-Bimodal Signal", 
+                    color="darkred", transform=ax.transAxes, 
+                    ha="right", va="top", fontsize=8, fontweight="bold",
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2))
+            
+        
+        # Layout adjustments (Shift labels from 0-15 up to 1-16 hardware format)
+        real_channel_name = channel_list[i]
+        ax.set_ylabel(f"Ch {real_channel_name}\nPC1", fontsize=8)
+        ax.grid(True, alpha=0.15)
+
+    # 4. Global labels & unified shared legend
+    axes[0].set_title("All Channels — Up/Down State Detection Overlay", fontsize=14, fontweight='bold')
+    axes[-1].set_xlabel("Time (s)")
+
+    up_patch   = mpatches.Patch(color="#FF9999", alpha=0.6, label="Up state")
+    down_patch = mpatches.Patch(color="#A8DADC", alpha=0.6, label="Down state")
+    axes[0].legend(handles=[up_patch, down_patch], fontsize=8, loc="upper right")
+
+    # 5. Overwrite the X-axis tick labels manually to show absolute timestamps
+    current_ticks = axes[-1].get_xticks()
+    new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
+    axes[-1].set_xticks(current_ticks)
+    axes[-1].set_xticklabels(new_labels)
+
+    plt.tight_layout()
+
+    # 6. Clean, normalized Windows saving directory path
+    save_figure(fig, "multichannel_state_overlay.png", cfg)
+    print("The plot has been saved to:", os.path.join(cfg["paths"]["figures_dir"], "multichannel_state_overlay.png"))
+
+    return fig, axes
 
 def _shade_states(
     ax: plt.Axes,
@@ -794,6 +1066,82 @@ def plot_spectrogram(log_mua, times, freqs, Sxx_db, t_ds, trials, trial_start_s)
     plt.tight_layout()
     plt.show()
 
+def plot_spectrogram_mua(log_mua, times, freqs, Sxx_db, t_ds, cfg):
+    # --- FIX 1: Find the true end time of your actual data ---
+    max_real_time = t_ds[-1]  # This will be exactly ~289.799s
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 7), sharex=True)
+
+    # Plot 1: logMUA (z-scored)
+    print(f"t_ds: {t_ds}")
+    ax1.plot(t_ds, log_mua, color='black', linewidth=0.5)
+    ax1.set_ylabel('logMUA a.u.', fontsize=12)
+    # ax1.set_title('logMUA and Spectrogram across Trials', fontsize=14)
+    ax1.grid(False)
+    ax1.set_xlim(t_ds[0], t_ds[-1]) # Force explicit axis boundary bounds
+
+    ax1.get_yaxis().set_visible(False)
+
+    for spine in ax1.spines.values():
+        spine.set_visible(False)
+
+    print(f"Spectrogram times: {times}")
+    # Plot 2: Spectrogram
+    im = ax2.pcolormesh(
+        times,
+        freqs,
+        Sxx_db,
+        shading='auto',
+        cmap='turbo',
+        # cmap='RdBu_r',
+        vmin=-2.5,   # Keeps the baseline dark blue
+        vmax=4.0
+    )
+    ax2.set_ylabel('Frequency (Hz)', fontsize=12)
+    ax2.set_xlabel('Time (s)', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+
+    divider = make_axes_locatable(ax2)
+    cax = divider.append_axes("right", size="2%", pad=0.1)
+    
+    cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+    cbar.set_label(r'$\log_{10}(P(\omega))$', fontsize=13)
+    
+    # Optional: Add an invisible placeholder box next to ax1 so their 
+    # right edges match down to the exact pixel.
+    divider_top = make_axes_locatable(ax1)
+    cax_ghost = divider_top.append_axes("right", size="2%", pad=0.1)
+    cax_ghost.axis('off') # Keep it hidden
+
+    # Clean layout margins (keep this, it controls the space between subplots)
+    fig.subplots_adjust(hspace=0.2)
+
+    # --- SAVE AS TRANSPARENT IMAGE ---
+    processed_dir = os.path.dirname(cfg["paths"]["processed_dir"])
+    fig_dir = os.path.join(processed_dir, "results", "figures")
+    t_start = cfg['visualization']['t_start']
+    t_end = cfg['visualization']['t_end']
+
+    # 2. Build the name of the dynamic subfolder (e.g., "3280-3340")
+    time_folder = f"{t_start}-{t_end}"
+    fig_dir = os.path.join(fig_dir, time_folder)
+
+    filename = f"Spectrogram_MUA_{t_start}-{t_end}.png"
+    os.makedirs(fig_dir, exist_ok=True)
+
+    # Specify your path and filename. bbox_inches='tight' removes excess padding.
+    output_path = os.path.join(fig_dir, filename)
+    plt.savefig(
+        output_path, 
+        transparent=True,   # <-- Makes background transparent
+        dpi=300,            # <-- High resolution for publication/presentations
+        bbox_inches='tight' # <-- Safely crops edges without ruining alignment
+    )
+    print(f"💾 [Saved Transparent Plot]: {output_path}")
+
+    # Display the plot on your screen
+    plt.show()
 
 def plot_delta_fr_boxplot(
     delta_data: dict[str, list[float]],

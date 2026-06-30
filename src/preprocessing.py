@@ -56,9 +56,13 @@ from scipy.signal import butter, sosfiltfilt, welch, filtfilt
 from scipy.signal import resample_poly
 from scipy.ndimage import uniform_filter1d, gaussian_filter1d
 from fractions import Fraction
+from src.core.up_down import detect_states, _run_pca
+from src.core.firing_rates import (
+    compute_epoch_firing_rates,
+    compute_aligned_traces,
+)
 
-
-
+from src.core.metrics import compute_state_durations, build_summary_table
 # ---------------------------------------------------------------------------
 # Channel selection
 # ---------------------------------------------------------------------------
@@ -81,13 +85,60 @@ def select_channel(data: np.ndarray, preproc_cfg: dict) -> np.ndarray:
         Single-channel (or averaged) LFP signal.
     """
     channel = preproc_cfg.get("channel", None)
+    print(f"Selecting channel(s): {channel}")
 
+    # So it is either one single channel or the average of multiple channels
     if channel is None:
         lfp = data.mean(axis=1)
     elif isinstance(channel, list):
         lfp = data[:, channel].mean(axis=1)
     elif isinstance(channel, int):
         lfp = data[:, channel]
+    else:
+        raise ValueError(
+            f"config.yaml preprocessing.channel must be null, an int, "
+            f"or a list of ints. Got: {channel}"
+        )
+
+    return lfp.astype(np.float64)
+
+def select_channel_raw(data: np.ndarray, preproc_cfg: dict) -> np.ndarray:
+    """
+    Select channels from the raw data array.
+
+    Parameters
+    ----------
+    data : np.ndarray, shape (n_samples, n_channels)
+        Raw LFP data.
+    preproc_cfg : dict
+        The "preprocessing" section of config.yaml.
+        Key: "channel" — int, list of ints, or null (→ select all).
+
+    Returns
+    -------
+    lfp : np.ndarray, shape (n_samples,)
+        Single-channel LFP signal.
+    """
+    channel = preproc_cfg.get("channel", None)
+    print(f"Selecting channel(s): {channel}")
+    
+    if channel is None:
+        print("All channels are selected.")
+        lfp = data  # Returns the full 2D matrix (n_samples, n_channels)
+        
+    elif isinstance(channel, int):
+        idx = channel - 1
+        lfp = data[:, idx]  # Returns a 1D vector (n_samples,)
+        
+    elif isinstance(channel, list):
+        if len(channel) == 1:
+            idx = channel[0] - 1
+            print(f"Single channel list detected. Unpacking channel {channel[0]}")
+            lfp = data[:, idx]  # Forces it to be a clean 1D vector (n_samples,)
+        else:
+            idx = [c - 1 for c in channel]
+            lfp = data[:, np.array(idx)]  # Returns a 2D matrix subset (n_samples, len(channel))
+            
     else:
         raise ValueError(
             f"config.yaml preprocessing.channel must be null, an int, "
@@ -164,7 +215,7 @@ def extract_features(
 
     Parameters
     ----------
-    lfp : np.ndarray, shape (n_samples,)
+    lfp : np.ndarray, shape (n_samples)
         Single-channel LFP signal at original sampling rate.
     fs : float
         Sampling rate in Hz.
@@ -262,7 +313,120 @@ def extract_features(
 
     return features, t_ds
 
+def extract_features_all_channels(lfp_all: np.ndarray, fs: float, cfg: dict) -> tuple[dict, np.ndarray]:
+    """
+    Loops through all channels, extracts features, and groups them by feature type.
+    
+    Returns
+    -------
+    grouped_features : dict
+        Contains 'SO', 'gamma', and 'logMUA' arrays of shape (n_downsampled, n_channels)
+    t_ds : np.ndarray
+        The downsampled time vector.
+    """
 
+    # --- FIX: Force 1D arrays into a 2D matrix shape of (n_samples, 1) ---
+    if lfp_all.ndim == 1:
+        lfp_all = lfp_all[:, np.newaxis]
+        
+    n_samples, n_channels = lfp_all.shape
+    preproc_cfg = cfg['preprocessing']
+    
+    # 1. Run a quick dry-run on channel 0 to find out the downsampled length (n_downsampled)
+    first_feat, t_ds = extract_features(lfp_all[:, 0], fs, preproc_cfg)
+    n_ds = first_feat.shape[0]
+    
+    # 2. Pre-allocate matrices to hold data for all channels (shape: n_samples x n_channels)
+    so_matrix   = np.zeros((n_ds, n_channels))
+    gamma_matrix = np.zeros((n_ds, n_channels))
+    mua_matrix   = np.zeros((n_ds, n_channels))
+
+    # 3. Pre-allocate matrices for States & PCA Data
+    states_matrix = np.zeros((n_ds, n_channels), dtype=int)
+    pc1_matrix    = np.zeros((n_ds, n_channels))
+    thresholds    = np.zeros(n_channels)
+
+    # 4. Storage lists for statistical metrics and snippet arrays
+    epochs_list     = [] # To hold the custom dictionary lists per channel
+    metrics_list    = [] # To hold your compute_metrics summary rows
+    up_traces_list  = [] # To hold trace snippets
+    down_traces_list = []
+    t_win           = None # Will be populated by the first successful channel
+
+    # 5. Master Loop
+    for ch in range(n_channels):
+        print(f"Extracting features for Channel {ch + 1}/{n_channels}...")
+        
+        # Extract z-scored features
+        feats, _ = extract_features(lfp_all[:, ch], fs, preproc_cfg)
+        so_matrix[:, ch]   = feats[:, 0]
+        gamma_matrix[:, ch] = feats[:, 1]
+        mua_matrix[:, ch]   = feats[:, 2]
+        pc1_matrix[:, ch] = _run_pca(feats)
+
+        try:
+            # Detect states immediately using those freshly minted features
+            states, epochs, _, threshold = detect_states(feats, t_ds, cfg)
+            # Store state variables
+            states_matrix[:, ch] = states
+            thresholds[ch]       = threshold
+            epochs_list.append(epochs)
+            # --- SAFE METRIC CALCULATION FOR HEALTHY CHANNELS ---
+            # Re-extract raw logMUA for true physical scale firing calculations
+            log_mua_raw = _extract_raw_log_mua(lfp_all[:, ch], fs, preproc_cfg)
+            # Extract both rates and aligned snippet window traces
+            up_frs, down_frs, up_traces, down_traces, t_win_ch = compute_firing_rates(log_mua_raw, t_ds, epochs, cfg)
+            t_win = t_win_ch # Keep global tracking reference
+            # Compute final statistics row
+            summary_row = compute_metrics(epochs, up_frs, down_frs)
+            summary_row["channel"] = ch + 1  # Tag it with its real hardware number
+            # print("AVAILABLE COLUMNS:", list(summary_row.keys()))  # <--- ADD THIS LINE
+            metrics_list.append(summary_row)
+            up_traces_list.append(up_traces)
+            down_traces_list.append(down_traces)
+
+
+        except ValueError as e:
+            # Check if this is our specific KDE bimodal error
+            if "bimodal" in str(e):
+                print(f"⚠️ [Skipping Channel {ch + 1}]: Distribution is not bimodal. Filling with placeholders.")
+                # Store safe placeholder zero arrays / None so your structure does not break
+                states_matrix[:, ch] = 0 
+                thresholds[ch]       = np.nan  # Use NaN to easily spot it on later analysis steps
+                empty_epochs         = {"up": [], "down": []}
+                epochs_list.append(empty_epochs)
+
+                # Append empty placeholders to metric trackers so index alignments match channel orders
+                metrics_list.append({"channel": ch + 1, "status": "KDE Failure / Skipped"})
+                up_traces_list.append(None)
+                down_traces_list.append(None)
+
+            else:
+                # If it's a completely different ValueError, raise it normally
+                raise e
+                # Also keep the raw (un-z-scored) logMUA for firing rate calculation.
+
+    grouped_features = {
+        "SO": so_matrix,
+        "gamma": gamma_matrix,
+        "logMUA": mua_matrix
+    }
+
+    detected_states = {
+        "states": states_matrix,
+        "pc1": pc1_matrix,
+        "thresholds": thresholds,
+        "epochs": epochs_list
+    }
+
+    channel_metrics = {
+        "summaries": metrics_list,      # Access via: channel_metrics["summaries"][ch]
+        "up_traces": up_traces_list,
+        "down_traces": down_traces_list,
+        "t_win": t_win
+    }
+
+    return grouped_features, detected_states, channel_metrics,t_ds
 # ---------------------------------------------------------------------------
 # Feature-specific helpers
 # ---------------------------------------------------------------------------
@@ -357,6 +521,25 @@ def _compute_raw_mua(
 
     return raw_mua
 
+def _extract_raw_log_mua(lfp: np.ndarray, fs: float, preproc_cfg: dict) -> np.ndarray:
+    """
+    Re-run just the logMUA extraction without z-scoring, and downsample
+    to match t_ds. Used for firing rate calculations in physical units.
+    """
+
+    mua_band   = preproc_cfg["mua_band"]
+    mua_win_ms = preproc_cfg["mua_window_ms"]
+    order      = preproc_cfg.get("filter_order", 4)
+    target_fs  = preproc_cfg.get("downsample_to_hz", None)
+
+    mua_filt = bandpass_filter(lfp, fs, mua_band[0], mua_band[1], order=order)
+    log_mua  = _sliding_log_power(mua_filt, fs, mua_win_ms)
+
+    if target_fs is not None and target_fs < fs:
+        log_mua = _downsample(log_mua, fs, target_fs)
+
+    return log_mua
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -434,6 +617,46 @@ def _sliding_log_power(signal: np.ndarray, fs: float, window_ms: float) -> np.nd
         log_power[i] = np.log(s2 / w + eps)
 
     return log_power
+
+def compute_firing_rates(log_mua_raw: np.ndarray, t_ds: float, epochs: dict, cfg: dict) -> tuple:
+    """
+    Compute mean firing rates per epoch and transition-aligned traces.
+    Uses the raw (un-z-scored) logMUA signal.
+    """
+    if epochs is None:
+        raise RuntimeError("Call detect_states() before compute_firing_rates().")
+
+    up_frs, down_frs = compute_epoch_firing_rates(
+        log_mua_raw, t_ds, epochs, cfg
+    )
+
+    up_traces, down_traces, t_win = compute_aligned_traces(
+        log_mua_raw, t_ds, epochs, cfg
+    )
+
+    print(f"  Firing rates: mean Up FR = {np.nanmean(up_frs):.3f}, "
+            f"mean Down FR = {np.nanmean(down_frs):.3f}")
+
+    return up_frs, down_frs, up_traces, down_traces, t_win
+
+
+def compute_metrics(epochs: dict, up_frs: list, down_frs: list) -> None:
+    """
+    Compute duration statistics and assemble the one-row summary DataFrame.
+    """
+    if epochs is None:
+        raise RuntimeError("Call detect_states() before compute_metrics().")
+
+    duration_stats = compute_state_durations(epochs)
+
+    summary_row = build_summary_table(
+        slice_id      = "S1",
+        condition     = "Baseline",
+        duration_stats = duration_stats,
+        up_frs        = up_frs,
+        down_frs      = down_frs,
+    )
+    return summary_row
 
 # ---------------------------------------------------------------------------
 # Extension points

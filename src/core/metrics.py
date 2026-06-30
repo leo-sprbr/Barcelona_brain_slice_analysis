@@ -30,14 +30,35 @@ Usage
 import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon, mannwhitneyu
-
+from src.core.firing_rates import (
+    compute_epoch_firing_rates,
+    compute_aligned_traces,
+)
 from src.utils import confidence_interval, apply_multiple_correction, significance_label
 
 
 # ---------------------------------------------------------------------------
 # 1. State duration summary
 # ---------------------------------------------------------------------------
+def compute_firing_rates(epochs: dict, log_mua_raw: np.ndarray, t_ds: np.ndarray, cfg: dict) -> None:
+    """
+    Compute mean firing rates per epoch and transition-aligned traces.
+    Uses the raw (un-z-scored) logMUA signal.
+    """
+    if epochs is None:
+        raise RuntimeError("Call detect_states() before compute_firing_rates().")
 
+    up_frs, down_frs = compute_epoch_firing_rates(
+        log_mua_raw, t_ds, epochs, cfg
+    )
+
+    up_traces, down_traces, t_win = compute_aligned_traces(
+        log_mua_raw, t_ds, epochs, cfg
+    )
+
+    print(f"  Firing rates: mean Up FR = {np.nanmean(up_frs):.3f}, "
+            f"mean Down FR = {np.nanmean(down_frs):.3f}")
+    
 def compute_state_durations(epochs: dict) -> dict:
     """
     Compute summary duration statistics from a set of Up/Down epochs.
