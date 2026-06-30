@@ -135,7 +135,7 @@ def load_h5_time_window(h5_path: str, cfg: dict) -> tuple[np.ndarray, dict]:
 
     return data, meta
 
-def list_h5_file_single(cfg: dict) -> str:
+def list_single_h5_file(cfg: dict) -> str:
     print("Checking for .h5 file in processed_dir...")
     
     processed_dir = cfg['paths']['processed_dir']

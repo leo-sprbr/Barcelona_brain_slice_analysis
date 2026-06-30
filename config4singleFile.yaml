@@ -23,8 +23,8 @@ paths:
   figures_dir:      "results/figures"  # Subfolder for plots
 
 visualization:
-  t_start: 2860
-  t_end: 3200
+  t_start: 2055
+  t_end: 2100
 
 # ------------------------------------------------------------
 # EXPERIMENTAL CONDITIONS
@@ -55,7 +55,7 @@ preprocessing:
   # Which channel index to use (0-based). Set to null to average
   # all channels. You can also pass a list of indices to average,
   # e.g. [0, 1, 2]. 
-  channel: [21]            # null → average all 32 channels
+  channel: null            # null → average all 32 channels
 
   high_channels: []
   low_channels: []

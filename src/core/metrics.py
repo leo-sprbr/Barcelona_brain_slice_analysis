@@ -36,6 +36,10 @@ from src.core.firing_rates import (
 )
 from src.utils import confidence_interval, apply_multiple_correction, significance_label
 
+import sys, os
+
+# from src.core.metrics import compute_firing_rates
+sys.path.insert(0, os.path.abspath('..'))
 
 # ---------------------------------------------------------------------------
 # 1. State duration summary
@@ -460,7 +464,116 @@ def _empty_result(test: str, n: int, reason: str = "") -> dict:
         result["n_b"] = 0
     return result
 
+def print_channel_metrics_summary(metrics_data: dict, states_data: dict, cfg: dict) -> None:
+    """
+    Accepts the pipeline metrics and state structures to print a beautifully
+    formatted, human-readable statistical summary table for all channels.
+    Safely unpacks data metrics regardless of whether they are formatted as
+    standard Python dictionaries, Pandas Series, or DataFrames.
+    """
+    # 1. Grab the total number of processed channels
+    n_processed_channels = len(metrics_data["summaries"])
+    
+    # 2. Grab the configured channel labels
+    channel_list = cfg["preprocessing"].get("channel", None)
+    
+    if channel_list is None or channel_list == []:
+        channel_list = list(range(1, n_processed_channels + 1))
+        
+    # Helper to safely extract a clean float out of potential Pandas objects
+    def _to_float(item, key_name):
+        if item is None:
+            return 0.0
+        
+        # Extract the value depending on whether it's a DataFrame, Series, or dict
+        try:
+            if hasattr(item, "get"):
+                val = item.get(key_name, 0.0)
+            else:
+                val = item[key_name]
+        except (KeyError, IndexError, ValueError):
+            return 0.0
 
+        # If the extracted value itself is a Pandas Series, pull the first value
+        if hasattr(val, "iloc"):
+            if val.empty:
+                return 0.0
+            val = val.iloc[0]
+            
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # 3. Collect all lines of text in a tracking list
+    lines = []
+    lines.append("="*50)
+    lines.append("         METRICS SUMMARY PER CHANNEL         ")
+    lines.append("="*50)
+    
+    # 4. Iterate through every channel summary row stored in metrics_data
+    for idx, summary in enumerate(metrics_data["summaries"]):
+        real_ch = channel_list[idx] if idx < len(channel_list) else (idx + 1)
+        
+        lines.append(f"\n▶ Hardware Channel {real_ch}:")
+        
+        # Check if this channel threw a KDE bimodal error and was skipped
+        if isinstance(summary, dict) and "status" in summary:
+            lines.append(f"  ❌ Status: SKIPPED (KDE non-bimodal distribution)")
+            continue
+        elif np.isnan(states_data["thresholds"][idx]):
+            lines.append(f"  ❌ Status: SKIPPED (KDE non-bimodal distribution)")
+            continue
+            
+        # 5. Extract and format values cleanly using our adaptive unpacking tool
+        n_up      = int(_to_float(summary, 'n_up'))
+        n_down    = int(_to_float(summary, 'n_down'))
+        mean_up   = _to_float(summary, 'mean_up_s')
+        sem_up    = _to_float(summary, 'sem_up_s')
+        mean_down = _to_float(summary, 'mean_down_s')
+        sem_down  = _to_float(summary, 'sem_down_s')
+        so_freq   = _to_float(summary, 'so_frequency')
+        
+        # 6. Add the cleaned text metrics to our list
+        lines.append(f"  • Total States Detected : Up: {n_up} | Down: {n_down}")
+        lines.append(f"  • Mean Up Duration      : {mean_up:.3f} seconds (± {sem_up:.3f} SEM)")
+        lines.append(f"  • Mean Down Duration    : {mean_down:.3f} seconds (± {sem_down:.3f} SEM)")
+        lines.append(f"  • Slow Oscillation Freq : {so_freq:.3f} Hz")
+        
+        # 7. Unpack and print your multi-unit firing rate intensities (mean logMUA)
+        mean_up_fr   = _to_float(summary, 'mean_fr_up')
+        mean_down_fr = _to_float(summary, 'mean_fr_down')
+        
+        lines.append(f"  • Mean Up Firing Rate   : {mean_up_fr:.3f} (logMUA strength)")
+        lines.append(f"  • Mean Down Firing Rate : {mean_down_fr:.3f} (logMUA strength)")
+            
+    lines.append("\n" + "="*50)
+    
+    # 8. Join the lines together into a single block of string text
+    full_output_text = "\n".join(lines)
+    
+    # 9. Write out to the console terminal screen
+    print(full_output_text)
+    
+
+    processed_dir = os.path.dirname(cfg["paths"]["processed_dir"])
+    fig_dir = os.path.join(processed_dir, "results", "figures")
+    t_start = cfg['visualization']['t_start']
+    t_end = cfg['visualization']['t_end']
+
+    # 2. Build the name of the dynamic subfolder (e.g., "3280-3340")
+    time_folder = f"{t_start}-{t_end}"
+    fig_dir = os.path.join(fig_dir, time_folder)
+    os.makedirs(fig_dir, exist_ok=True)
+
+    metric_summary_path = os.path.join(fig_dir, f"Metric_summary_{time_folder}.txt")
+    
+    try:
+        with open(metric_summary_path, "w", encoding="utf-8") as f:
+            f.write(full_output_text)
+        print(f"\n💾 [Saved Successfully]: Full report text written to '{os.path.abspath(metric_summary_path)}'\n")
+    except Exception as e:
+        print(f"\n⚠️ Warning: Could not write metrics to text file due to error: {e}\n")
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------
