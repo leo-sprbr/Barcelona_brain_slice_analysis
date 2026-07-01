@@ -433,6 +433,49 @@ def shared_ylims(*value_lists, padding: float = 0.1) -> tuple[float, float]:
     lo, hi = float(all_vals.min()), float(all_vals.max())
     span   = hi - lo if hi != lo else 1.0
     return (lo - padding * span, hi + padding * span)
+
+
+def get_electrode_display_order(n_channels: int) -> list[int]:
+    """
+    Return the display order matching the physical electrode disposition
+    on the recording array.
+
+    The array alternates pairs from the front (ascending) and pairs from
+    the back (descending):
+        1, 2, N, N-1, 3, 4, N-2, N-3, 5, 6, N-4, N-5, ...
+
+    Parameters
+    ----------
+    n_channels : int
+        Total number of channels on the array (e.g. 32).
+
+    Returns
+    -------
+    list of int
+        1-based channel numbers in display order. Length = n_channels.
+        For n_channels=32:
+            [1, 2, 32, 31, 3, 4, 30, 29, 5, 6, 28, 27, 7, 8, 26, 25,
+             9, 10, 24, 23, 11, 12, 22, 21, 13, 14, 20, 19, 15, 16, 18, 17]
+    """
+    order = []
+    front = 1                # next low channel to add
+    back  = n_channels       # next high channel to add
+
+    while front <= back:
+        # Front pair (ascending)
+        order.append(front)
+        if front + 1 <= back:
+            order.append(front + 1)
+        front += 2
+
+        # Back pair (descending)
+        if back >= front:
+            order.append(back)
+            if back - 1 >= front:
+                order.append(back - 1)
+            back -= 2
+
+    return order[:n_channels]
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------

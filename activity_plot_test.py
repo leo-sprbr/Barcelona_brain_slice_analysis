@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from src.config import load_config
 from src.data_io import load_h5_time_window, list_single_h5_file
-from src.preprocessing import select_channel_raw, _extract_raw_log_mua, extract_features_all_channels
+from src.preprocessing import select_channel_raw, _extract_raw_log_mua, extract_features_all_channels, highpass_filter
 from src.visualization import plot_multichannel_states_overlay, plot_raw_lfp_time_window, plot_multichannel_feature_group, plot_pc1_distribution, plot_states_overlay, plot_spectrogram, plot_spectrogram_mua
 from src.core.up_down import detect_states
 from src.utils import spectrogram
@@ -42,7 +42,7 @@ def extract_lfp_from_raw(raw_signal, fs_raw, target_fs=1000.0, cutoff=300.0):
     
     # resample_poly changes the rate by up/down perfectly
     lfp_signal = signal.resample_poly(filtered_signal, up, down)
-    
+    lfp_signal = highpass_filter(lfp_signal, up, 0.1)
     shape_lfp = lfp_signal.shape
     print(f"Downsampled LFP signal shape: {shape_lfp}, new fs: {target_fs}")
     return lfp_signal

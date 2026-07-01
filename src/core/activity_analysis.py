@@ -10,7 +10,7 @@ from src.core.firing_rates import (
 )
 from src.core.metrics import compute_state_durations, build_summary_table
 from src.core.up_down import detect_states, _run_pca
-from src.preprocessing import bandpass_filter, _sliding_log_power, _downsample
+from src.preprocessing import bandpass_filter, _sliding_log_power, _downsample, highpass_filter, notch_filter
 class Activity_analysis:
     """
     Container for one recording (one .h5 file), its analysis results,
@@ -247,23 +247,28 @@ class Activity_analysis:
         }
 
 
-    def _extract_raw_log_mua(self,lfp: np.ndarray, fs: float, preproc_cfg: dict) -> np.ndarray:
-        """
-        Re-run just the logMUA extraction without z-scoring, and downsample
-        to match t_ds. Used for firing rate calculations in physical units.
-        """
 
+    def _extract_raw_log_mua(self,lfp: np.ndarray, fs: float, preproc_cfg: dict) -> np.ndarray:
         mua_band   = preproc_cfg["mua_band"]
         mua_win_ms = preproc_cfg["mua_window_ms"]
         order      = preproc_cfg.get("filter_order", 4)
         target_fs  = preproc_cfg.get("downsample_to_hz", None)
+
+        # Apply the same cleanup used by extract_features so firing rates
+        # come from a drift-free, mains-free signal.
+        hp_cutoff = preproc_cfg.get("hp_cutoff_hz", 0.1)
+        if hp_cutoff and hp_cutoff > 0:
+            lfp = highpass_filter(lfp, fs, hp_cutoff, order=order)
+        notch_hz = preproc_cfg.get("notch_hz", 50.0)
+        notch_q  = preproc_cfg.get("notch_quality", 30.0)
+        if notch_hz and notch_hz > 0:
+            lfp = notch_filter(lfp, fs, freq_hz=notch_hz, quality=notch_q)
 
         mua_filt = bandpass_filter(lfp, fs, mua_band[0], mua_band[1], order=order)
         log_mua  = _sliding_log_power(mua_filt, fs, mua_win_ms)
 
         if target_fs is not None and target_fs < fs:
             log_mua = _downsample(log_mua, fs, target_fs)
-
         return log_mua
 
     # -----------------------------------------------------------------------

@@ -16,15 +16,15 @@
 # ------------------------------------------------------------
 paths:
   raw_data_dir:     "Z:/datasets/BCN_Slices/20260414"         # Where .smr files are stored
-  processed_dir:    "C:\\ETH\\EVA\\Brain slice stimulation\\20260414_brain slices exp in BCN\\Nathalia\\h5_raw"   # Where .h5 files are written
-  data_file:        "20260414_SLICE3_CONTROL_Nathalia.h5"  # Path to the single .h5 file to analyze
+  processed_dir:    "C:/Users/leosp/OneDrive/Bureau/MSRL/fancy_modular_BCN_code/data/processed"   # Where .h5 files are written
+  data_file:        "20260616_control_Nathalia.h5"  # Path to the single .h5 file to analyze
   condition_dir:    "data/condition"
   results_dir:      "results"          # Where CSVs and figures are saved
   figures_dir:      "results/figures"  # Subfolder for plots
 
 visualization:
-  t_start: 2055
-  t_end: 2100
+  t_start: 3390
+  t_end: 3440
 
 # ------------------------------------------------------------
 # EXPERIMENTAL CONDITIONS
@@ -65,12 +65,23 @@ preprocessing:
   # slow negative deflection associated with Down states.
   so_band: [0.1, 1.5]
 
+
+    # High-pass cutoff applied to the raw LFP before any feature extraction
+  # (removes slow drift and DC offset). Set to null or 0 to disable.
+  hp_cutoff_hz: 0.5
+
+  # Notch filter for mains noise (50 Hz in Europe, 60 Hz in the US).
+  # Applied inside extract_features() and _extract_raw_log_mua() so all
+  # three features (SO, gamma, logMUA) and firing rates come from a
+  # mains-free signal. Set to null or 0 to disable.
+  notch_hz: 50
+  notch_quality: 30
   # Gamma envelope
   # Bandpass range (Hz) for the gamma band. The envelope is
   # computed as the variance of the filtered signal in a sliding
   # window of size gamma_window_ms.
   gamma_band: [30, 100]
-  gamma_window_ms: 50        # Sliding window length in milliseconds
+  gamma_window_ms: 200        # Sliding window length in milliseconds
 
   # Multi-Unit Activity (MUA)
   # Bandpass range (Hz) for the high-frequency / MUA band.

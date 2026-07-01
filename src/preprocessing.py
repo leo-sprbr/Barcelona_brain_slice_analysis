@@ -199,6 +199,21 @@ def lowpass_filter(
     sos = butter(order, cutoff_hz / nyq, btype="low", output="sos")
     return sosfiltfilt(sos, signal)
 
+def highpass_filter(
+    signal: np.ndarray,
+    fs: float,
+    cutoff_hz: float,
+    order: int = 4,
+) -> np.ndarray:
+    """
+    Zero-phase Butterworth low-pass filter.
+    Used to produce the decimated raw signal (SO feature).
+    """
+    nyq = fs / 2.0
+    if cutoff_hz >= nyq:
+        return signal.copy()
+    sos = butter(order, cutoff_hz / nyq, btype="high", output="sos")
+    return sosfiltfilt(sos, signal)
 
 # ---------------------------------------------------------------------------
 # Feature extraction — main entry point
@@ -231,8 +246,25 @@ def extract_features(
     t_ds : np.ndarray, shape (n_downsampled,)
         Time vector (seconds) at the downsampled sampling rate.
     """
+
     order     = preproc_cfg.get("filter_order", 4)
     target_fs = preproc_cfg.get("downsample_to_hz", None)
+
+    # ── Cleaning: remove slow drift + mains noise BEFORE any feature extraction
+    hp_cutoff = preproc_cfg.get("hp_cutoff_hz", 0.1)
+    if hp_cutoff and hp_cutoff > 0:
+        lfp = highpass_filter(lfp, fs, hp_cutoff, order=order)
+
+    notch_hz = preproc_cfg.get("notch_hz", 50.0)
+    notch_q  = preproc_cfg.get("notch_quality", 30.0)
+    if notch_hz and notch_hz > 0:
+        lfp = notch_filter(lfp, fs, freq_hz=notch_hz, quality=notch_q)
+    # ────────────────────────────────────────────────────────────────────────
+
+    # ── NEW: remove slow drift before any feature extraction ──────────────
+    hp_cutoff = preproc_cfg.get("hp_cutoff_hz", 0.1)
+    if hp_cutoff and hp_cutoff > 0:
+        lfp = highpass_filter(lfp, fs, hp_cutoff, order=order)
 
     # ------------------------------------------------------------------
     # 1. SO signal — decimated raw LFP
@@ -254,15 +286,10 @@ def extract_features(
     #    directly interpretable as signal amplitude.
     # ------------------------------------------------------------------
     gamma_band   = preproc_cfg["gamma_band"]
-    gamma_win_ms = preproc_cfg.get("gamma_window_ms", 500.0)  # note: was 50
-    gamma_smooth_ms = preproc_cfg.get("gamma_smooth_ms", 100.0)
+    gamma_win_ms = preproc_cfg.get("gamma_window_ms", 200.0)
 
     gamma_filt = bandpass_filter(lfp, fs, gamma_band[0], gamma_band[1], order=order)
     gamma_env  = _sliding_variance(gamma_filt, fs, gamma_win_ms)
-    
-    # Gaussian smooth to remove remaining fast fluctuations
-    sigma_gamma = gamma_smooth_ms * 1e-3 * fs
-    gamma_env   = gaussian_filter1d(gamma_env, sigma=sigma_gamma)
 
     # ------------------------------------------------------------------
     # 3. logMUA — normalised high-frequency power, log-scaled + smoothed
@@ -273,11 +300,12 @@ def extract_features(
     #    After log-scaling, apply an 80 ms moving-average smooth
     #    (Mattia & Del Giudice 2002) to reduce fast fluctuations.
     # ------------------------------------------------------------------
-    mua_band    = preproc_cfg["mua_band"]
-    mua_smooth_ms = preproc_cfg.get("mua_smooth_ms", 20.0) # post-log smooth
+    mua_band   = preproc_cfg["mua_band"]
+    mua_win_ms = preproc_cfg.get("mua_window_ms", 5.0)
 
-    log_mua = _compute_log_mua(lfp, fs, mua_band, mua_smooth_ms)
-
+    mua_filt = bandpass_filter(lfp, fs, mua_band[0], mua_band[1], order=order)
+    log_mua  = _sliding_log_power(mua_filt, fs, mua_win_ms)
+    
     # ------------------------------------------------------------------
     # Align lengths: logMUA may be shorter after windowed computation.
     # After downsampling, trim all three to the shortest.
@@ -522,24 +550,27 @@ def _compute_raw_mua(
     return raw_mua
 
 def _extract_raw_log_mua(lfp: np.ndarray, fs: float, preproc_cfg: dict) -> np.ndarray:
-    """
-    Re-run just the logMUA extraction without z-scoring, and downsample
-    to match t_ds. Used for firing rate calculations in physical units.
-    """
-
     mua_band   = preproc_cfg["mua_band"]
     mua_win_ms = preproc_cfg["mua_window_ms"]
     order      = preproc_cfg.get("filter_order", 4)
     target_fs  = preproc_cfg.get("downsample_to_hz", None)
+
+    # Apply the same cleanup used by extract_features so firing rates
+    # come from a drift-free, mains-free signal.
+    hp_cutoff = preproc_cfg.get("hp_cutoff_hz", 0.1)
+    if hp_cutoff and hp_cutoff > 0:
+        lfp = highpass_filter(lfp, fs, hp_cutoff, order=order)
+    notch_hz = preproc_cfg.get("notch_hz", 50.0)
+    notch_q  = preproc_cfg.get("notch_quality", 30.0)
+    if notch_hz and notch_hz > 0:
+        lfp = notch_filter(lfp, fs, freq_hz=notch_hz, quality=notch_q)
 
     mua_filt = bandpass_filter(lfp, fs, mua_band[0], mua_band[1], order=order)
     log_mua  = _sliding_log_power(mua_filt, fs, mua_win_ms)
 
     if target_fs is not None and target_fs < fs:
         log_mua = _downsample(log_mua, fs, target_fs)
-
     return log_mua
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -657,6 +688,40 @@ def compute_metrics(epochs: dict, up_frs: list, down_frs: list) -> None:
         down_frs      = down_frs,
     )
     return summary_row
+
+
+from scipy.signal import iirnotch, filtfilt
+
+def notch_filter(
+    signal: np.ndarray,
+    fs: float,
+    freq_hz: float = 50.0,
+    quality: float = 30.0,
+) -> np.ndarray:
+    """
+    Zero-phase IIR notch filter to remove mains noise.
+
+    Parameters
+    ----------
+    signal : np.ndarray, shape (n_samples,)
+    fs : float
+        Sampling rate (Hz).
+    freq_hz : float
+        Notch frequency to remove (50 Hz for Europe, 60 Hz for the US).
+    quality : float
+        Q factor. Higher = narrower notch. 30 is a standard value that
+        removes 50 Hz cleanly without eating into nearby biological signals
+        (which is why the gamma band starts safely above at, say, 30 Hz
+        but we still want the notch to be surgical around 50 Hz).
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples,)
+    """
+    if freq_hz <= 0 or freq_hz >= fs / 2:
+        return signal.copy()
+    b, a = iirnotch(w0=freq_hz, Q=quality, fs=fs)
+    return filtfilt(b, a, signal)
 
 # ---------------------------------------------------------------------------
 # Extension points

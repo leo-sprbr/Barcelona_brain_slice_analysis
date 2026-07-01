@@ -66,34 +66,32 @@ def save_figure(fig: plt.Figure, filename: str, cfg: dict) -> str:
     """
     Save a figure to the configured figures directory.
 
-    Parameters
-    ----------
-    fig : plt.Figure
-    filename : str
-        Filename without extension (extension is added from config).
-    cfg : dict
-        Full config dict.
+    Directory layout
+    ----------------
+        <cfg.paths.figures_dir>/<t_start>-<t_end>/<filename>_t<t_start>-<t_end>.<fmt>
 
-    Returns
-    -------
-    str
-        Full path where the figure was saved.
+    cfg["paths"]["figures_dir"] is the BASE — the test script is expected
+    to have set this to include the recording name, e.g.
+        results/figures/20260414_SLICE3_CONTROL_Nathalia
+
+    The <t_start>-<t_end> time-window subfolder is added here automatically
+    so each analysis window gets its own folder.
     """
-    processed_dir = os.path.dirname(cfg["paths"]["processed_dir"])
-    fig_dir = os.path.join(processed_dir, "results", "figures")
-    t_start = cfg['visualization']['t_start']
-    t_end = cfg['visualization']['t_end']
+    # Base figures folder — respect whatever the caller has set,
+    # so nested recording folders (set in the test script) work.
+    base_dir = cfg["paths"]["figures_dir"]
 
-    # 2. Build the name of the dynamic subfolder (e.g., "3280-3340")
-    time_folder = f"{t_start}-{t_end}"
-    fig_dir = os.path.join(fig_dir, time_folder)
-
-    filename = f"{filename}_t{t_start}-{t_end}"
+    # Time-window subfolder
+    t_start = cfg["visualization"]["t_start"]
+    t_end   = cfg["visualization"]["t_end"]
+    fig_dir = os.path.join(base_dir, f"{t_start}-{t_end}")
     os.makedirs(fig_dir, exist_ok=True)
 
+    # Append the time window to the filename too, so identical filenames
+    # from different windows are still distinguishable if flattened later
     fmt  = cfg.get("figures", {}).get("format", "png")
     dpi  = cfg.get("figures", {}).get("dpi", 300)
-    path = os.path.join(fig_dir, f"{filename}.{fmt}")
+    path = os.path.join(fig_dir, f"{filename}_t{t_start}-{t_end}.{fmt}")
 
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     print(f"Saved figure → {path}")
@@ -301,57 +299,63 @@ def plot_features(
     return fig, axes
 
 def plot_multichannel_feature_group(
-    feature_matrix: np.ndarray, 
-    t_ds: np.ndarray, 
-    feature_name: str, 
-    cfg: dict
+    feature_matrix: np.ndarray,
+    t_ds: np.ndarray,
+    feature_name: str,
+    cfg: dict,
+    channel_order: list[int] = None,
 ) -> plt.Figure:
     """
     Plots all channels for a single feature type in stacked subplots.
-    
+
     Parameters
     ----------
     feature_matrix : shape (n_downsampled, n_channels)
-    feature_name : str ("SO", "Gamma Envelope", or "logMUA")
-    cfg : dict
+    channel_order : list of int, optional
+        1-based channel numbers giving the display order. If None, defaults
+        to natural order 1..N. Use src.utils.get_electrode_display_order(N)
+        to get the physical electrode ordering.
     """
+    from src.utils import get_electrode_display_order
+
     n_channels = feature_matrix.shape[1]
-    t_start = cfg['visualization']['t_start']
-    
-    # Create vertically stacked subplots sharing the same X-axis
+    t_start    = cfg['visualization']['t_start']
+
+    # Resolve display order
+    if channel_order is None:
+        channel_order = list(range(1, n_channels + 1))   # natural order
+
     fig, axes = plt.subplots(
-        nrows=n_channels, 
-        ncols=1, 
-        figsize=(14, 2 * n_channels), 
-        sharex=True
+        nrows=n_channels, ncols=1,
+        figsize=(14, 2 * n_channels), sharex=True,
     )
-    
     if n_channels == 1:
         axes = [axes]
-        
-    # Plot each channel
-    for i in range(n_channels):
-        axes[i].plot(t_ds, feature_matrix[:, i], color="crimson" if "logMUA" in feature_name else "steelblue", lw=0.6)
-        axes[i].set_ylabel(f"Ch {i + 1}\n(z)", fontsize=8)
-        axes[i].axhline(0, color="gray", lw=0.5, ls="--")
-        axes[i].grid(True, alpha=0.15)
-        
+
+    # Plot channels in the requested order
+    for row_idx, ch_1based in enumerate(channel_order):
+        col_idx = ch_1based - 1   # convert to 0-based column index
+        axes[row_idx].plot(
+            t_ds, feature_matrix[:, col_idx],
+            color="crimson" if "logMUA" in feature_name else "steelblue",
+            lw=0.6,
+        )
+        axes[row_idx].set_ylabel(f"Ch {ch_1based}\n(z)", fontsize=8)
+        axes[row_idx].axhline(0, color="gray", lw=0.5, ls="--")
+        axes[row_idx].grid(True, alpha=0.15)
+
     axes[0].set_title(f"All Channels — {feature_name}", fontsize=14, fontweight='bold')
     axes[-1].set_xlabel("Time (s)")
-    
-    # --- Custom Tick Text Labels Override ---
+
     current_ticks = axes[-1].get_xticks()
     new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
     axes[-1].set_xticks(current_ticks)
     axes[-1].set_xticklabels(new_labels)
-    
+
     plt.tight_layout()
-    
-    # Save to your defined figures directory
-    save_filename = f"multichannel_{feature_name.lower().replace(' ', '_')}.png"
+    save_filename = f"multichannel_{feature_name.lower().replace(' ', '_')}"
     save_figure(fig, save_filename, cfg)
     print("The plot has been saved to:", os.path.join(cfg["paths"]["figures_dir"], save_filename))
-
 
     return fig
 # ---------------------------------------------------------------------------
@@ -476,105 +480,89 @@ def plot_multichannel_states_overlay(
     states_data: dict,
     t_ds: np.ndarray,
     cfg: dict,
+    channel_order: list[int] = None,
 ) -> tuple[plt.Figure, np.ndarray]:
     """
     Plot PC1 over time with Up/Down states indicated by background shading.
 
     Parameters
     ----------
+    states_data : dict
+        {"pc1": (n_samples, n_channels), "states": (n_samples, n_channels),
+         "thresholds": (n_channels,), "epochs": [...]}
     t_ds : np.ndarray
-    pc1 : np.ndarray
-    states : np.ndarray — binary (1=Up, 0=Down)
-    threshold : float
     cfg : dict
-    t_range_s : (start_s, end_s) or None
-    ax : plt.Axes, optional
-
-    Returns
-    -------
-    fig, ax
+    channel_order : list of int, optional
+        1-based channel numbers giving the display (row) order.
+        If None, defaults to the config's channel list or natural 1..N.
     """
     _apply_style(cfg)
 
-    # 1. Extract matrices from your unified states dictionary
-    pc1_matrix = states_data["pc1"]          # shape: (n_samples, n_channels)
-    states_matrix = states_data["states"]    # shape: (n_samples, n_channels)
-    thresholds = states_data["thresholds"]    # shape: (n_channels,)
-    
+    pc1_matrix    = states_data["pc1"]
+    states_matrix = states_data["states"]
+    thresholds    = states_data["thresholds"]
+
     n_samples, n_channels = pc1_matrix.shape
     t_start = cfg['visualization']['t_start']
 
-    # 2. Create a vertically stacked subplot layout sharing a synchronized X-axis
-    fig, axes = plt.subplots(
-        nrows=n_channels, 
-        ncols=1, 
-        figsize=(14, 2 * n_channels), 
-        sharex=True
-    )
+    # Resolve display order
+    if channel_order is None:
+        channel_order = list(range(1, n_channels + 1))
 
-    # Ensure 'axes' is always iterable even if a single-channel fallback occurs
-    if n_channels == 1:
+    fig, axes = plt.subplots(
+        nrows=len(channel_order),
+        ncols=1,
+        figsize=(14, 2 * len(channel_order)),
+        sharex=True,
+    )
+    if len(channel_order) == 1:
         axes = [axes]
 
-    channel_list = cfg["preprocessing"].get("channel", None)
-    if channel_list is None or channel_list == []:
-        channel_list = list(range(1, n_channels + 1))
+    for row_idx, ch_1based in enumerate(channel_order):
+        col_idx = ch_1based - 1
+        ax = axes[row_idx]
 
-    # 3. Loop through channels to generate each individual subplot panel
-    for i in range(n_channels):
-        ax = axes[i]
-        
-        # Grab tracking rows for the current channel
-        ch_pc1 = pc1_matrix[:, i]
-        ch_states = states_matrix[:, i]
-        ch_thresh = thresholds[i]
+        if col_idx < 0 or col_idx >= n_channels:
+            ax.text(0.5, 0.5, f"Ch {ch_1based} not in data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="gray", fontsize=9)
+            ax.set_ylabel(f"Ch {ch_1based}\nPC1", fontsize=8)
+            continue
 
-        # Plot PC1 and its unique detection threshold line
+        ch_pc1    = pc1_matrix[:, col_idx]
+        ch_states = states_matrix[:, col_idx]
+        ch_thresh = thresholds[col_idx]
+
         ax.plot(t_ds, ch_pc1, color="gray", lw=0.7, alpha=0.8)
 
-        # --- FIXED SAFETY LOOP CHECK ---
         if not np.isnan(ch_thresh):
             ax.axhline(ch_thresh, color="crimson", lw=1, ls="--")
             _shade_states(ax, t_ds, ch_states, up_color="#FF9999", down_color="#A8DADC")
-            # Shade Up-state and Down-state regions using your helper background tool
-            _shade_states(ax, t_ds, ch_states, up_color="#FF9999", down_color="#A8DADC")
-
         else:
-           # 1. Give the broken channel a soft neutral background so it stands out as skipped
             ax.set_facecolor("#F9F9F9")
-            
-            # 2. Put the warning text neatly in the top-right corner out of the data's way
-            ax.text(0.98, 0.90, "No Threshold: Non-Bimodal Signal", 
-                    color="darkred", transform=ax.transAxes, 
+            ax.text(0.98, 0.90, "No Threshold: Non-Bimodal Signal",
+                    color="darkred", transform=ax.transAxes,
                     ha="right", va="top", fontsize=8, fontweight="bold",
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2))
-            
-        
-        # Layout adjustments (Shift labels from 0-15 up to 1-16 hardware format)
-        real_channel_name = channel_list[i]
-        ax.set_ylabel(f"Ch {real_channel_name}\nPC1", fontsize=8)
+
+        ax.set_ylabel(f"Ch {ch_1based}\nPC1", fontsize=8)
         ax.grid(True, alpha=0.15)
 
-    # 4. Global labels & unified shared legend
-    axes[0].set_title("All Channels — Up/Down State Detection Overlay", fontsize=14, fontweight='bold')
+    axes[0].set_title("All Channels — Up/Down State Detection Overlay",
+                      fontsize=14, fontweight='bold')
     axes[-1].set_xlabel("Time (s)")
 
     up_patch   = mpatches.Patch(color="#FF9999", alpha=0.6, label="Up state")
     down_patch = mpatches.Patch(color="#A8DADC", alpha=0.6, label="Down state")
     axes[0].legend(handles=[up_patch, down_patch], fontsize=8, loc="upper right")
 
-    # 5. Overwrite the X-axis tick labels manually to show absolute timestamps
     current_ticks = axes[-1].get_xticks()
     new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
     axes[-1].set_xticks(current_ticks)
     axes[-1].set_xticklabels(new_labels)
 
     plt.tight_layout()
-
-    # 6. Clean, normalized Windows saving directory path
-    save_figure(fig, "multichannel_state_overlay.png", cfg)
-    print("The plot has been saved to:", os.path.join(cfg["paths"]["figures_dir"], "multichannel_state_overlay.png"))
-
+    save_figure(fig, "multichannel_state_overlay", cfg)
     return fig, axes
 
 def _shade_states(
@@ -1795,6 +1783,87 @@ def plot_group_comparison(
     plt.tight_layout()
     return fig, axes
 
+
+def plot_multichannel_raw_lfp(
+    lfp_all: np.ndarray,
+    fs: float,
+    cfg: dict,
+    band: tuple = (0.1, 300),
+    channel_order: list[int] = None,
+) -> plt.Figure:
+    """
+    Plot all channels of the raw LFP after bandpass filtering (default 0.1–300 Hz).
+
+    Parameters
+    ----------
+    lfp_all : np.ndarray, shape (n_samples, n_channels) or (n_samples,)
+    fs : float
+        Original sampling rate.
+    cfg : dict
+    band : (low_hz, high_hz)
+        Bandpass edges. Default (0.1, 300).
+    channel_order : list of int, optional
+        1-based channel numbers giving the display (row) order.
+        If None, defaults to natural 1..N ordering. Use
+        src.utils.get_electrode_display_order(N) to get the physical order.
+    """
+    from src.preprocessing import bandpass_filter
+
+    if lfp_all.ndim == 1:
+        lfp_all = lfp_all[:, np.newaxis]
+
+    n_samples, n_channels = lfp_all.shape
+    t = np.arange(n_samples) / fs
+    t_start = cfg["visualization"].get("t_start", 0)
+
+    # Resolve display order
+    if channel_order is None:
+        channel_order = list(range(1, n_channels + 1))
+
+    fig, axes = plt.subplots(
+        nrows=len(channel_order), ncols=1,
+        figsize=(14, 2 * len(channel_order)),
+        sharex=True,
+    )
+    if len(channel_order) == 1:
+        axes = [axes]
+
+    # Iterate through the display order — row_idx = subplot position,
+    # ch_1based = channel number to display, col_idx = data column
+    for row_idx, ch_1based in enumerate(channel_order):
+        col_idx = ch_1based - 1
+        if col_idx < 0 or col_idx >= n_channels:
+            # Requested a channel that doesn't exist in the data — skip
+            axes[row_idx].text(0.5, 0.5, f"Ch {ch_1based} not in data",
+                               ha="center", va="center",
+                               transform=axes[row_idx].transAxes,
+                               color="gray", fontsize=9)
+            axes[row_idx].set_ylabel(f"Ch {ch_1based}", fontsize=8)
+            continue
+
+        filtered = bandpass_filter(
+            lfp_all[:, col_idx].astype(np.float64), fs, band[0], band[1], order=4
+        )
+        axes[row_idx].plot(t, filtered, color="black", lw=0.4)
+        axes[row_idx].set_ylabel(f"Ch {ch_1based}\n({band[0]}–{band[1]} Hz)", fontsize=8)
+        axes[row_idx].axhline(0, color="gray", lw=0.5, ls="--")
+        axes[row_idx].grid(True, alpha=0.15)
+
+    axes[0].set_title(
+        f"All Channels — Raw LFP bandpassed {band[0]}–{band[1]} Hz",
+        fontsize=14, fontweight="bold",
+    )
+    axes[-1].set_xlabel("Time (s)")
+
+    current_ticks = axes[-1].get_xticks()
+    new_labels = [f"{int(tick + t_start)}" for tick in current_ticks]
+    axes[-1].set_xticks(current_ticks)
+    axes[-1].set_xticklabels(new_labels)
+
+    plt.tight_layout()
+    save_filename = f"multichannel_raw_lfp_{band[0]}-{band[1]}Hz"
+    save_figure(fig, save_filename, cfg)
+    return fig
 # ---------------------------------------------------------------------------
 # Extension points
 # ---------------------------------------------------------------------------
